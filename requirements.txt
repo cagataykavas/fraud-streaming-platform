@@ -1,0 +1,7 @@
+confluent-kafka==2.11.1
+fastapi==0.116.1
+psycopg[binary]==3.2.9
+psycopg-pool==3.2.6
+pytest==8.4.1
+ruff==0.12.11
+uvicorn[standard]==0.35.0
