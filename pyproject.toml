@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fraud-streaming-platform"
+version = "0.2.0"
+description = "Streaming fraud scoring, case triage and analyst review reference platform"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools]
+py-modules = ["case_triage"]
+packages = ["src", "app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
