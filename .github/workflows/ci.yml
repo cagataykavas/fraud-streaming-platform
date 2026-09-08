@@ -13,7 +13,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
+          cache: pip
+      - name: Install application and test dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e .
       - run: ruff check src app tests case_triage.py
       - run: pytest -q
       - run: docker compose config
