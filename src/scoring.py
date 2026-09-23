@@ -65,12 +65,21 @@ class StreamingFraudScorer:
     """
 
     def __init__(self, history_size: int = 200) -> None:
+        if history_size <= 0:
+            raise ValueError("history_size must be positive")
         self.history_size = history_size
         self.history: dict[str, Deque[HistoricTransaction]] = defaultdict(
             lambda: deque(maxlen=history_size)
         )
 
-    def score(self, transaction: Transaction) -> FraudAssessment:
+    def assess(self, transaction: Transaction) -> FraudAssessment:
+        """Compute an assessment without mutating customer history.
+
+        Workers should use this method before durable persistence and call
+        :meth:`commit` only after the database transaction succeeds. Keeping
+        assessment and state mutation separate prevents failed deliveries and
+        duplicate Kafka replays from contaminating future velocity features.
+        """
         now = parse_time(transaction.event_time)
         history = self.history[transaction.customer_id]
         recent_5m = [item for item in history if now - item.event_time <= timedelta(minutes=5)]
@@ -104,7 +113,12 @@ class StreamingFraudScorer:
                 )
         elif transaction.amount >= 5000:
             signals.append(
-                Signal("large_amount_cold_start", 0.18, min(1.0, transaction.amount / 20000), "large amount before sufficient customer history exists")
+                Signal(
+                    "large_amount_cold_start",
+                    0.18,
+                    min(1.0, transaction.amount / 20000),
+                    "large amount before sufficient customer history exists",
+                )
             )
 
         recent_countries = {item.country_code for item in recent_15m}
@@ -145,7 +159,6 @@ class StreamingFraudScorer:
         else:
             action = "allow"
 
-        history.append(HistoricTransaction(now, transaction.amount, transaction.country_code))
         return FraudAssessment(
             transaction_id=transaction.transaction_id,
             customer_id=transaction.customer_id,
@@ -155,3 +168,21 @@ class StreamingFraudScorer:
             action=action,
             signals=tuple(signals),
         )
+
+    def commit(self, transaction: Transaction) -> None:
+        """Apply one durably admitted transaction to in-memory feature state."""
+        event_time = parse_time(transaction.event_time)
+        self.history[transaction.customer_id].append(
+            HistoricTransaction(event_time, transaction.amount, transaction.country_code)
+        )
+
+    def score(self, transaction: Transaction) -> FraudAssessment:
+        """Assess and immediately commit a transaction.
+
+        This compatibility path is appropriate for deterministic offline use.
+        Stream workers with an external durability boundary should call
+        ``assess`` and ``commit`` separately.
+        """
+        assessment = self.assess(transaction)
+        self.commit(transaction)
+        return assessment

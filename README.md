@@ -42,6 +42,22 @@ The worker uses a Kafka consumer group with **automatic offset commits disabled*
 
 That ordering demonstrates the failure boundary rather than pretending `consume → print()` is a production stream processor. The database insert is idempotent so a redelivered transaction does not create duplicate assessments.
 
+The scorer also separates **pure assessment** from **feature-state commit**. It
+first calculates an assessment without changing customer history, performs an
+`INSERT ... ON CONFLICT DO NOTHING RETURNING transaction_id`, commits the
+database transaction, and only then advances in-memory state. Therefore:
+
+- a PostgreSQL rollback cannot inflate later velocity or amount-history features;
+- a duplicate Kafka replay cannot enter feature history twice;
+- a duplicate assessment cannot publish a second review alert.
+
+The PostgreSQL uniqueness constraint is the durable replay authority. The
+in-memory history is still a reference implementation: a process restart loses
+feature state. A production deployment should restore keyed state from a
+compact changelog/state store. Atomic database-to-Kafka alert delivery also
+requires a transactional outbox (or equivalent); this change does not claim
+cross-system exactly-once delivery.
+
 ## Stateful low-latency features
 
 `src/scoring.py` maintains bounded per-customer history and computes:
@@ -95,6 +111,8 @@ Discussion points for interviews:
 - Why key the Kafka producer by `customer_id`?
 - What state breaks if customer events move between partitions?
 - Exactly-once Kafka semantics vs application-level idempotency?
+- Why must feature state advance only after durable admission?
+- Where would a transactional outbox close the database-to-alert failure gap?
 - What happens to late events beyond a Spark watermark?
 - When should a stream processor publish to a DLQ?
 - How would Redis/RocksDB/Flink keyed state change the design?
