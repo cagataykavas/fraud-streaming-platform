@@ -4,12 +4,12 @@ import argparse
 import json
 import os
 import signal
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 import psycopg
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
-from src.scoring import StreamingFraudScorer, Transaction
+from src.scoring import FraudAssessment, StreamingFraudScorer, Transaction
 
 DDL = """
 CREATE TABLE IF NOT EXISTS fraud_assessments (
@@ -26,6 +26,17 @@ CREATE INDEX IF NOT EXISTS idx_fraud_assessments_queue
     ON fraud_assessments (risk_score DESC, created_at ASC)
     WHERE action IN ('block_and_review', 'step_up_and_review');
 """
+
+
+@dataclass(frozen=True)
+class ProcessingResult:
+    transaction: Transaction
+    assessment: FraudAssessment
+    inserted: bool
+
+    @property
+    def should_emit_alert(self) -> bool:
+        return self.inserted and self.assessment.action != "allow"
 
 
 class Worker:
@@ -48,7 +59,12 @@ class Worker:
     def stop(self, *_: object) -> None:
         self.running = False
 
-    def process(self, conn: psycopg.Connection, payload: dict[str, object]) -> dict[str, object]:
+    def process(self, conn: psycopg.Connection, payload: dict[str, object]) -> ProcessingResult:
+        """Assess, persist and then commit feature state.
+
+        The database uniqueness constraint is the durable replay authority.
+        Scorer history advances only after a newly inserted assessment commits.
+        """
         transaction = Transaction(
             transaction_id=str(payload["transaction_id"]),
             customer_id=str(payload["customer_id"]),
@@ -57,8 +73,7 @@ class Worker:
             merchant_category=str(payload.get("merchant_category", "unknown")),
             country_code=str(payload.get("country_code", "XX")),
         )
-        assessment = self.scorer.score(transaction)
-        output = assessment.to_dict()
+        assessment = self.scorer.assess(transaction)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -67,6 +82,7 @@ class Worker:
                     confidence, action, signals
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (transaction_id) DO NOTHING
+                RETURNING transaction_id
                 """,
                 (
                     assessment.transaction_id,
@@ -78,7 +94,15 @@ class Worker:
                     json.dumps([asdict(item) for item in assessment.signals]),
                 ),
             )
-        return output
+            inserted = cur.fetchone() is not None
+
+        # A commit failure raises before in-memory state can change. A replay
+        # that conflicts on transaction_id is committed as a no-op and is not
+        # applied to state or emitted as a second alert.
+        conn.commit()
+        if inserted:
+            self.scorer.commit(transaction)
+        return ProcessingResult(transaction, assessment, inserted)
 
     def run(self) -> None:
         signal.signal(signal.SIGTERM, self.stop)
@@ -98,9 +122,9 @@ class Worker:
                         raise KafkaException(message.error())
                     try:
                         payload = json.loads(message.value())
-                        assessment = self.process(conn, payload)
-                        conn.commit()
-                        if assessment["action"] != "allow":
+                        result = self.process(conn, payload)
+                        assessment = result.assessment.to_dict()
+                        if result.should_emit_alert:
                             self.producer.produce(
                                 self.alert_topic,
                                 key=str(assessment["customer_id"]),
@@ -118,11 +142,15 @@ class Worker:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Consume transactions, score fraud risk and persist review cases.")
+    parser = argparse.ArgumentParser(
+        description="Consume transactions, score fraud risk and persist review cases."
+    )
     parser.add_argument("--bootstrap", default=os.getenv("KAFKA_BOOTSTRAP", "localhost:19092"))
     parser.add_argument("--topic", default="transactions")
     parser.add_argument("--alert-topic", default="fraud-alerts")
-    parser.add_argument("--dsn", default=os.getenv("POSTGRES_DSN", "postgresql://fraud:fraud@localhost:5433/fraud"))
+    parser.add_argument(
+        "--dsn", default=os.getenv("POSTGRES_DSN", "postgresql://fraud:fraud@localhost:5433/fraud")
+    )
     args = parser.parse_args()
     Worker(args.bootstrap, args.topic, args.alert_topic, args.dsn).run()
 
