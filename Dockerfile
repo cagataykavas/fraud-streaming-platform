@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY src ./src
 COPY case_triage.py ./case_triage.py
+COPY durable_review_queue.py ./durable_review_queue.py
 RUN pip install --no-cache-dir --no-deps . \
     && useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /app

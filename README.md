@@ -78,6 +78,12 @@ curl -X POST http://localhost:8000/cases/tx-0000000123/review \
 
 `case_triage.py` provides a separate priority heuristic combining model risk, uncertainty, monetary impact, customer impact and evidence count.
 
+`durable_review_queue.py` carries the same validation, capacity and starvation-ordering contract
+across process restarts. Its SQLite reference uses atomic claims, renewable single-owner analyst
+leases, hashed lease tokens and idempotent completion IDs. See
+[`docs/transactional_review_queue.md`](docs/transactional_review_queue.md) for the concurrency and
+storage boundary.
+
 ## Failure exercises
 
 ```bash
@@ -108,4 +114,6 @@ Discussion points for interviews:
 
 ## CI
 
-GitHub Actions runs Ruff, deterministic scorer/triage tests, validates Docker Compose and builds the service image. Spark is kept as an optional dependency because installing a JVM/Spark runtime is not necessary for every unit-test run.
+GitHub Actions runs Ruff, deterministic scorer/triage and transactional-lease tests, validates
+Docker Compose and builds the service image. Spark is kept as an optional dependency because
+installing a JVM/Spark runtime is not necessary for every unit-test run.
