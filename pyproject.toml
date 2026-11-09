@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [tool.setuptools]
-py-modules = ["case_triage"]
+py-modules = ["case_triage", "durable_review_queue"]
 packages = ["src", "app"]
 
 [tool.pytest.ini_options]
