@@ -56,6 +56,30 @@ That ordering demonstrates the failure boundary rather than pretending `consume 
 
 The deterministic scorer is easy to unit test and compare with other streaming implementations.
 
+## Score drift audit
+
+`src/drift.py` compares an approved reference score population with a current
+window using fixed-bin Population Stability Index (PSI). It validates that both
+populations are sufficiently large, finite and bounded to `[0, 1]`, retains raw
+bin counts alongside smoothed proportions, and writes the report atomically.
+An alert returns exit code `2`; malformed or inadmissible evidence returns `3`.
+
+```bash
+python -m src.drift reference_scores.json current_scores.json \
+  --output artifacts/score_drift.json
+```
+
+Inputs may be a JSON array or `{"scores": [...]}`. The default decile edges are
+policy-owned and therefore remain comparable across runs. Default PSI warning
+and alert thresholds are explicit operating-policy examples, not universal
+statistical significance levels. Calibrate them against scorecard behavior,
+label delay, seasonality and analyst capacity before using the CLI as a release
+or incident gate.
+
+PSI identifies a change in score distribution; it does not diagnose the cause
+or establish degraded fraud performance. Follow an alert with feature drift,
+segment analysis, delayed-label performance and data-quality investigation.
+
 ## Spark path
 
 `spark/streaming_job.py` demonstrates Kafka ingestion with an explicit schema, event-time watermarks and sliding-window customer velocity features using Spark Structured Streaming. It represents the scale-out alternative to the single-process stateful scorer.
