@@ -56,6 +56,46 @@ That ordering demonstrates the failure boundary rather than pretending `consume 
 
 The deterministic scorer is easy to unit test and compare with other streaming implementations.
 
+## Delay-aware model evaluation
+
+Fraud outcomes arrive after chargebacks, investigations, or other adjudication processes. Treating
+transactions without a known outcome as legitimate creates a class-dependent measurement bias and
+can make a recent model look better than it is. `src/delayed_label_evaluation.py` provides a
+point-in-time evaluation boundary for offline monitoring and release evidence:
+
+- select a fixed scoring window and an explicit `as_of` timestamp;
+- exclude every prediction newer than the configured label-maturity delay, including early fraud
+  confirmations, so label speed cannot select the cohort;
+- exclude outcomes first observed after `as_of` and report them as future evidence;
+- fail the admission decision when mature-label coverage or positive/negative support is too low;
+- report Brier score, tie-stable average precision, and threshold precision/recall/false-positive
+  rate over the same admitted cohort;
+- emit aggregate counts and a deterministic SHA-256 evidence commitment without exposing
+  transaction identifiers in the report.
+
+The maturity delay is a governed data contract, not an estimate learned from the evaluation set.
+The audit does not correct selective investigation, label error, policy feedback, or population
+drift; those require separate validation. Tests use deterministic synthetic records and make no
+claim about real fraud performance.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from src.delayed_label_evaluation import EvaluationPolicy, audit_delayed_labels
+
+policy = EvaluationPolicy(
+    as_of=datetime(2026, 11, 16, tzinfo=timezone.utc),
+    window_start=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    window_end=datetime(2026, 11, 16, tzinfo=timezone.utc),
+    label_maturity_delay=timedelta(days=30),
+    minimum_mature_predictions=1_000,
+    minimum_positive_labels=25,
+    minimum_negative_labels=500,
+    maximum_missing_label_rate=0.02,
+)
+report = audit_delayed_labels(predictions, outcomes, policy)
+```
+
 ## Spark path
 
 `spark/streaming_job.py` demonstrates Kafka ingestion with an explicit schema, event-time watermarks and sliding-window customer velocity features using Spark Structured Streaming. It represents the scale-out alternative to the single-process stateful scorer.
